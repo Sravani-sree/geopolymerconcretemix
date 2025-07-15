@@ -1,100 +1,104 @@
+# app.py
 import streamlit as st
 import numpy as np
-import pandas as pd
-import plotly.express as px
-from sklearn.ensemble import RandomForestRegressor
+import pickle
+from scipy.optimize import minimize
 
-# Simulated dummy model loader (replace with your trained inverse models)
-def load_inverse_models():
-    models = {}
-    for target in ["Molarity", "Alkali/Precursor", "Silicate/Hydroxide", "Water/Solids"]:
-        model = RandomForestRegressor(n_estimators=10)
-        X_dummy = np.random.rand(20, 3)
-        y_dummy = np.random.rand(20)
-        model.fit(X_dummy, y_dummy)
-        models[target] = model
-    return models
+# ------------------------------
+# Load trained model
+# ------------------------------
+with open('xgb_inverse_model.pkl', 'rb') as f:
+    model = pickle.load(f)
 
-models_inverse = load_inverse_models()
+# ------------------------------
+# Define input columns
+# ------------------------------
+input_columns = [
+    'Fly Ash',
+    'GGBS',
+    'NaOH',
+    'Molarity',
+    'Silicate Solution',
+    'Sand',
+    'Coarse Aggregate',
+    'Water',
+    'Spz',
+    'Temperature'
+]
 
-# 💡 Conversion logic to material quantities
-def calculate_materials(predicted, precursor_kg=450, ggbs_ratio=0.3):
-    alkali_ratio = predicted['Alkali/Precursor']
-    silicate_ratio = predicted['Silicate/Hydroxide']
-    water_solid = predicted['Water/Solids']
+# ------------------------------
+# Define realistic bounds
+# ------------------------------
+bounds = [
+    (300, 600),     # Fly Ash
+    (50, 300),      # GGBS
+    (5, 50),        # NaOH
+    (6, 16),        # Molarity
+    (50, 250),      # Silicate Solution
+    (600, 900),     # Sand
+    (700, 1200),    # Coarse Aggregate
+    (140, 220),     # Water
+    (0, 10),        # Spz
+    (20, 80)        # Temperature
+]
 
-    ggbs = precursor_kg * ggbs_ratio
-    alkali_total = precursor_kg * alkali_ratio
-    na2sio3 = alkali_total * silicate_ratio / (1 + silicate_ratio)
-    naoh = alkali_total - na2sio3
-    solids = precursor_kg + ggbs + naoh + na2sio3
-    water = water_solid * solids
-    aggregates = max(0, 2300 - (precursor_kg + ggbs + naoh + na2sio3 + water))
+# ------------------------------
+# Define objective function
+# ------------------------------
+def objective_function(inputs, target_values, model):
+    inputs = np.array(inputs).reshape(1, -1)
+    prediction = model.predict(inputs)[0]
+    error = np.sum((prediction - target_values) ** 2)
+    return error
 
-    return {
-        "Precursor (Flyash/Metakaolin)": round(precursor_kg, 2),
-        "GGBS": round(ggbs, 2),
-        "NaOH": round(naoh, 2),
-        "Na₂SiO₃": round(na2sio3, 2),
-        "Water": round(water, 2),
-        "Aggregates (Fine + Coarse)": round(aggregates, 2)
-    }
+# ------------------------------
+# Inverse Design Optimizer
+# ------------------------------
+def inverse_design(target_values, model, bounds):
+    initial_guess = np.array([(low + high) / 2 for low, high in bounds])
+    result = minimize(
+        objective_function,
+        initial_guess,
+        args=(target_values, model),
+        bounds=bounds,
+        method='L-BFGS-B'
+    )
+    if result.success:
+        return result.x
+    else:
+        return None
 
-# 💰 Optional cost estimation
-def estimate_cost(materials, cost_per_kg):
-    total_cost = 0
-    cost_breakdown = {}
-    for mat, qty in materials.items():
-        cost = qty * cost_per_kg.get(mat, 0)
-        cost_breakdown[mat] = round(cost, 2)
-        total_cost += cost
-    cost_breakdown["Total Cost (₹/m³)"] = round(total_cost, 2)
-    return cost_breakdown
+# ------------------------------
+# Streamlit UI
+# ------------------------------
+st.title('🧪 Geopolymer Concrete Inverse Design App')
+st.markdown("""
+Enter your **desired target properties** (compressive strength, slump flow, T500) 
+and get **recommended mix design proportions**!
+""")
 
-# 🌐 Streamlit App UI
-st.title("Geopolymer Concrete Mix Design Assistant")
-st.markdown("Provide target **performance requirements** to predict mix design and cost:")
+# User inputs
+cs_target = st.number_input('Desired Compressive Strength (MPa)', 20.0, 60.0, 35.0)
+sf_target = st.number_input('Desired Slump Flow (mm)', 600.0, 800.0, 700.0)
+t500_target = st.number_input('Desired T500 Flow Time (s)', 2.0, 5.0, 3.5)
 
-cs28 = st.number_input("🧱 Compressive Strength (CS28 in MPa)", 10.0, 60.0, 30.0)
-sf = st.number_input("💧 Slump Flow (SF in mm)", 300.0, 800.0, 500.0)
-t500 = st.number_input("⏱️ Flow Time (T500 in sec)", 1.0, 20.0, 10.0)
+if st.button('Run Inverse Design'):
+    target_array = np.array([cs_target, sf_target, t500_target])
+    optimal_mix = inverse_design(target_array, model, bounds)
+    
+    if optimal_mix is not None:
+        st.success('✅ Optimized Mix Design Found!')
+        mix_df = {col: [val] for col, val in zip(input_columns, optimal_mix)}
+        st.table(mix_df)
 
-if st.button("🔍 Predict Mix Design"):
-    input_data = np.array([[cs28, sf, t500]])
-    predictions = {}
-    for target, model in models_inverse.items():
-        pred = model.predict(input_data)[0]
-        predictions[target] = round(pred, 3)
+        # Predict properties for this mix
+        predicted_properties = model.predict(optimal_mix.reshape(1, -1))[0]
+        st.subheader('Predicted Properties for Suggested Mix')
+        st.write(f"- Compressive Strength: {predicted_properties[0]:.2f} MPa")
+        st.write(f"- Slump Flow: {predicted_properties[1]:.2f} mm")
+        st.write(f"- T500 Flow Time: {predicted_properties[2]:.2f} s")
+    else:
+        st.error('❌ Optimization failed. Try adjusting targets or check model.')
 
-    st.subheader("🎯 Predicted Mix Ratios:")
-    st.write(pd.DataFrame(predictions.items(), columns=["Parameter", "Predicted Value"]))
-
-    # Estimate material quantities
-    materials = calculate_materials(predictions)
-    st.subheader("🧱 Estimated Material Quantities (kg/m³):")
-    st.write(pd.DataFrame(materials.items(), columns=["Material", "Amount (kg/m³)"]))
-
-    # Add cost breakdown
-    cost_per_kg = {
-        "Precursor (Flyash/Metakaolin)": 4.5,
-        "GGBS": 3.5,
-        "NaOH": 35.0,
-        "Na₂SiO₃": 20.0,
-        "Water": 0.01,
-        "Aggregates (Fine + Coarse)": 0.5
-    }
-    cost_breakdown = estimate_cost(materials, cost_per_kg)
-    st.subheader("💰 Estimated Material Cost (₹ per m³):")
-    st.write(pd.DataFrame(cost_breakdown.items(), columns=["Material", "Cost (₹)"]))
-
-    # Show pie chart of materials
-    st.subheader("📊 Material Composition (Pie Chart)")
-
-    df_pie = pd.DataFrame(materials.items(), columns=["Material", "Amount (kg/m³)"])
-    fig = px.pie(df_pie, names="Material", values="Amount (kg/m³)",
-                 title="Material Distribution per m³",
-                 hole=0.3)
-    fig.update_traces(textinfo='percent+label')
-    st.plotly_chart(fig, use_container_width=True)
 
 
