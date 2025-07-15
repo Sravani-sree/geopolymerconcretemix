@@ -77,28 +77,31 @@ Enter your **desired target properties** (compressive strength, slump flow, T500
 and get **recommended mix design proportions**!
 """)
 
-# User inputs
+# Get user input
 cs_target = st.number_input('Desired Compressive Strength (MPa)', 20.0, 60.0, 35.0)
 sf_target = st.number_input('Desired Slump Flow (mm)', 600.0, 800.0, 700.0)
 t500_target = st.number_input('Desired T500 Flow Time (s)', 2.0, 5.0, 3.5)
 
 if st.button('Run Inverse Design'):
     target_array = np.array([cs_target, sf_target, t500_target])
+    st.write("🎯 Target values:", target_array)
+
     optimal_mix = inverse_design(target_array, model, bounds)
-    
+
     if optimal_mix is not None:
-        st.success('✅ Optimized Mix Design Found!')
+        st.success('✅ Optimization successful!')
+        
+        # Show mix design
         mix_df = {col: [val] for col, val in zip(input_columns, optimal_mix)}
+        st.subheader("🔧 Suggested Mix Proportions:")
         st.table(mix_df)
 
-        # Predict properties for this mix
+        # Predict resulting properties
         predicted_properties = model.predict(optimal_mix.reshape(1, -1))[0]
-        st.subheader('Predicted Properties for Suggested Mix')
+        st.subheader('📊 Predicted Properties for Suggested Mix')
         st.write(f"- Compressive Strength: {predicted_properties[0]:.2f} MPa")
         st.write(f"- Slump Flow: {predicted_properties[1]:.2f} mm")
         st.write(f"- T500 Flow Time: {predicted_properties[2]:.2f} s")
     else:
-        st.error('❌ Optimization failed. Try adjusting targets or check model.')
-
-
+        st.error("❌ Optimization failed.")
 
